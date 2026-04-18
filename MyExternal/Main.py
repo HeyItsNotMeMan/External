@@ -215,6 +215,7 @@ offsets         = {}
 offsets_ready   = False
 minimap_high_zoom = False
 follow_head_locked_inst = 0
+follow_head_runtime_enabled = Follow_Head
 
 def log(msg):
     if DEBUG_MODE:
@@ -568,7 +569,7 @@ def compute_follow_head_mouse_delta():
     """
     global follow_head_locked_inst
 
-    if not Follow_Head or workspaceAddr == 0 or not offsets_ready:
+    if not follow_head_runtime_enabled or workspaceAddr == 0 or not offsets_ready:
         return 0.0, 0.0
     try:
         hwnd = find_window_by_title("Roblox")
@@ -760,7 +761,7 @@ def init_injection():
 
             log('[+] Injection completed successfully!')
             log(f'[!] Minimap: {"ENABLED" if ENABLE_MINIMAP else "DISABLED"}')
-            log(f'[!] Follow_Head: {"ENABLED" if Follow_Head else "DISABLED"} (hold L)')
+            log(f'[!] Follow_Head: {"ENABLED" if Follow_Head else "DISABLED"} (hold Left Click)')
             log('[!] Press P to toggle | N Low/High zoom | INSERT to quit')
             return True
 
@@ -778,6 +779,7 @@ class MinimapCanvas(QWidget):
         self._points = []
         self._half = 100
         self._font_label = QFont("Arial", 8)
+        self._center_dot_enabled = True
 
     def set_half_size(self, h):
         self._half = max(40, int(h))
@@ -786,6 +788,10 @@ class MinimapCanvas(QWidget):
     def set_points(self, points):
         """points: list of (offset_x, offset_y, is_green) or (... , dy_world)."""
         self._points = points
+        self.update()
+
+    def set_center_dot_enabled(self, enabled):
+        self._center_dot_enabled = bool(enabled)
         self.update()
 
     def paintEvent(self, event):
@@ -813,7 +819,8 @@ class MinimapCanvas(QWidget):
         painter.drawLine(cx - half, cy, cx + half, cy)
 
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(QColor(0, 100, 255, 255)))
+        center_col = QColor(0, 100, 255, 255) if self._center_dot_enabled else QColor(255, 220, 0, 255)
+        painter.setBrush(QBrush(center_col))
         painter.drawEllipse(cx - 4, cy - 4, 8, 8)
 
         for item in self._points:
@@ -969,7 +976,7 @@ class MinimapWindow(QWidget):
             self.canvas.set_points([])
 
 def follow_head_worker():
-    """While L is held, move mouse toward nearest valid head at Follow_Head_Speed."""
+    """While LeftClick is held, move mouse toward nearest valid head at Follow_Head_Speed."""
     global follow_head_locked_inst
     LMOUSE_KEY = 0x01
     last_t = time()
@@ -986,7 +993,7 @@ def follow_head_worker():
             if dt > 0.05:
                 dt = 0.05
 
-            if not Follow_Head or not features_enabled:
+            if not follow_head_runtime_enabled or not features_enabled:
                 follow_head_locked_inst = 0
                 sleep(0.008)
                 continue
@@ -1027,13 +1034,15 @@ def follow_head_worker():
             sleep(0.016)
 
 def hotkey_listener():
-    global features_enabled, minimap_high_zoom
+    global features_enabled, minimap_high_zoom, follow_head_runtime_enabled, follow_head_locked_inst
     P_KEY      = 0x50
     N_KEY      = 0x4E
     INSERT_KEY = 0x2D
+    MIDDLE_MOUSE_KEY = 0x04
     last_p     = False
     last_n     = False
     last_ins   = False
+    last_mid   = False
     check_cnt  = 0
 
     while mem.process_id == 0:
@@ -1041,7 +1050,7 @@ def hotkey_listener():
 
     roblox_pid = mem.process_id
     log(f'[+] Hotkey listener started (PID: {roblox_pid})')
-    log('[*] P = toggle | N = LowZoom / HightZoom | L = Follow_Head (hold) | INSERT = quit')
+    log('[*] P = toggle | N = LowZoom / HightZoom | Left Click = Follow_Head (hold) | INSERT = quit')
 
     while True:
         try:
@@ -1060,6 +1069,7 @@ def hotkey_listener():
             cur_p   = windll.user32.GetAsyncKeyState(P_KEY)      & 0x8000 != 0
             cur_n   = windll.user32.GetAsyncKeyState(N_KEY)      & 0x8000 != 0
             cur_ins = windll.user32.GetAsyncKeyState(INSERT_KEY) & 0x8000 != 0
+            cur_mid = windll.user32.GetAsyncKeyState(MIDDLE_MOUSE_KEY) & 0x8000 != 0
 
             if cur_p and not last_p:
                 features_enabled = not features_enabled
@@ -1070,6 +1080,12 @@ def hotkey_listener():
                 zl = 'HightZoom' if minimap_high_zoom else 'LowZoom'
                 log(f'[*] Minimap zoom: {zl}')
 
+            if cur_mid and not last_mid:
+                follow_head_runtime_enabled = not follow_head_runtime_enabled
+                if not follow_head_runtime_enabled:
+                    follow_head_locked_inst = 0
+                log(f'[*] Follow_Head {"ENABLED" if follow_head_runtime_enabled else "DISABLED"}')
+
             if cur_ins and not last_ins:
                 log('[*] INSERT pressed - closing...')
                 sys.exit(0)
@@ -1077,6 +1093,7 @@ def hotkey_listener():
             last_p   = cur_p
             last_n   = cur_n
             last_ins = cur_ins
+            last_mid = cur_mid
         except SystemExit:
             raise
         except:
@@ -1100,17 +1117,22 @@ if __name__ == "__main__":
     init_injection()
 
     Thread(target=hotkey_listener, daemon=True).start()
-    if Follow_Head:
-        Thread(target=follow_head_worker, daemon=True).start()
-        log('[+] Follow_Head worker')
+    Thread(target=follow_head_worker, daemon=True).start()
+    log('[+] Follow_Head worker')
 
     app = QApplication([])
 
     minimap_win = None
     if ENABLE_MINIMAP:
         minimap_win = MinimapWindow()
+        minimap_win.canvas.set_center_dot_enabled(follow_head_runtime_enabled)
         log('[+] Minimap window')
 
-    log('[*] Press P to toggle | N for LowZoom/HightZoom | hold L for Follow_Head | INSERT to quit')
+    log('[*] Press P to toggle | N for LowZoom/HightZoom | hold LeftClick for Follow_Head | Middle Click to toggle Follow_Head | INSERT to quit')
+    if minimap_win:
+        dot_timer = QTimer()
+        dot_timer.setTimerType(Qt.PreciseTimer)
+        dot_timer.timeout.connect(lambda: minimap_win.canvas.set_center_dot_enabled(follow_head_runtime_enabled))
+        dot_timer.start(25)
 
     sys.exit(app.exec_())
